@@ -14,8 +14,9 @@ const ID = 'Florence-2-base-ft';
 const DTYPE = { embed_tokens: 'int8', vision_encoder: 'q4', encoder_model: 'q4', decoder_model_merged: 'q4' };
 let processor = null, model = null, device = null, loading = null;
 
-function load(force) {
+function load(force, threads) {
   if (model) return Promise.resolve();
+  if (threads && !loading) env.backends.onnx.wasm.numThreads = self.crossOriginIsolated ? threads : 1;
   return loading || (loading = (async () => {
     const progress_callback = p => { if (p.status === 'progress' && p.total) postMessage({ type: 'progress', file: p.file, loaded: p.loaded, total: p.total }); };
     processor = await AutoProcessor.from_pretrained(ID, { progress_callback });
@@ -42,9 +43,9 @@ async function run(image, spec, maxTokens) {
 self.onmessage = async e => {
   const m = e.data;
   try {
-    if (m.type === 'load') { await load(m.device); postMessage({ type: 'ready', id: m.id, device }); }
+    if (m.type === 'load') { await load(m.device, m.threads); postMessage({ type: 'ready', id: m.id, device }); }
     else if (m.type === 'run') {
-      await load(m.device);
+      await load(m.device, m.threads);
       const results = [];
       for (let i = 0; i < m.jobs.length; i++) {
         postMessage({ type: 'step', id: m.id, i, n: m.jobs.length });

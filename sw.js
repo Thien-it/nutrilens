@@ -1,6 +1,6 @@
 /* NutriLens — service worker: tải sẵn toàn bộ app (kể cả bộ đọc chữ OCR) để chạy không cần mạng.
    Đổi VERSION mỗi lần sửa file để máy đã cài nhận bản mới. */
-const VERSION = 'nutrilens-v19';
+const VERSION = 'nutrilens-v20';
 const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/db.js', 'js/recipes.js', 'js/logic.js', 'js/vision.js', 'js/app.js',

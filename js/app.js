@@ -356,6 +356,26 @@
        2) Chỉ giữ thứ khớp bảng nguyên liệu/món của app; nhãn lạ bị loại và hiện riêng.
        3) Phân tầng bằng chứng: có khung trên ảnh → tích sẵn; chỉ nhắc trong câu mô tả → KHÔNG tích, chờ người dùng xác nhận.
        4) Người dùng tích/bỏ từng thứ; app ghi lại để lần sau thứ hay bị nhận nhầm sẽ không tích sẵn nữa. */
+  /* Chế độ chạy bộ phân tích kỹ. Điện thoại ít bộ nhớ: trình duyệt ĐÓNG trang khi nạp mô hình quá sức.
+     App đánh dấu trước khi chạy; nếu lần mở sau thấy dấu còn đó nghĩa là lần trước bị đóng → tự lùi một nấc. */
+  const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const MOBILE = IOS || /Android/i.test(navigator.userAgent);
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { /* bỏ qua */ } };
+  const VLM_LADDER = MOBILE ? ['wasm'].concat(navigator.gpu ? ['webgpu'] : [], ['off']) : ['auto', 'wasm', 'off'];
+  const vlmMode = () => { const m = lsGet('nl-vlm-mode'); return VLM_LADDER.includes(m) ? m : VLM_LADDER[0]; };
+  const VLM_MODE_TXT = { auto: 'tự động (dùng GPU nếu có)', wasm: 'tiết kiệm bộ nhớ (CPU)', webgpu: 'GPU', off: 'đã tắt vì máy không đủ bộ nhớ' };
+  const vlmOpts = () => { const m = vlmMode(); return { device: m === 'wasm' ? 'wasm' : undefined, threads: MOBILE ? 2 : undefined }; };
+  let vlmCrashNote = '';
+  function vlmCrashCheck() {
+    const busy = lsGet('nl-vlm-busy'); if (!busy) return;
+    lsSet('nl-vlm-busy', null);
+    const i = VLM_LADDER.indexOf(busy), next = VLM_LADDER[Math.min(VLM_LADDER.length - 1, (i < 0 ? 0 : i) + 1)];
+    lsSet('nl-vlm-mode', next);
+    vlmCrashNote = next === 'off'
+      ? 'Lần trước bộ phân tích kỹ làm app bị đóng vì máy này không đủ bộ nhớ. App đã tắt tính năng đó trên máy này; nhận diện nhanh, đọc chữ, khoanh vùng & dạy AI và thêm tay vẫn dùng bình thường.'
+      : 'Lần trước bộ phân tích kỹ làm app bị đóng vì thiếu bộ nhớ. App đã chuyển sang chế độ “' + VLM_MODE_TXT[next] + '”, bạn có thể thử chạy lại.';
+  }
   const VLM = (() => {
     let w = null, n = 0, onProg = null; const pend = new Map();
     function worker() {
@@ -368,13 +388,13 @@
     }
     const call = (msg, prog) => new Promise((res, rej) => { onProg = prog; msg.id = ++n; pend.set(msg.id, { res, rej }); worker().postMessage(msg); });
     return {
-      load: prog => call({ type: 'load' }, prog),
-      run: (jobs, prog) => call({ type: 'run', jobs, maxTokens: 160 }, prog),
+      load: prog => call(Object.assign({ type: 'load' }, vlmOpts()), prog),
+      run: (jobs, prog) => call(Object.assign({ type: 'run', jobs, maxTokens: 160 }, vlmOpts()), prog),
       reset() { if (w) { w.terminate(); w = null; pend.clear(); } },
       async downloaded() { try { if (!('caches' in self) || !(await caches.has('transformers-cache'))) return false; const c = await caches.open('transformers-cache'); return (await c.keys()).filter(r => /\.onnx/.test(r.url)).length >= 4; } catch (e) { return false; } },
     };
   })();
-  const VLM_MB = 205, APP_VERSION = '1.19';
+  const VLM_MB = 205, APP_VERSION = '1.20';
   // từ tiếng Anh mô hình hay dùng → nguyên liệu của app (cụm dài xét trước)
   const EN_ING = [
     ['brown rice', 'Cơm gạo lứt'], ['fried rice', 'Cơm trắng'], ['rice', 'Cơm trắng'], ['spaghetti', 'Mì Ý'], ['pasta', 'Mì Ý'], ['noodles', 'Mì trứng'], ['noodle', 'Mì trứng'],
@@ -426,18 +446,22 @@
   }
   async function deepAnalyze() {
     const mine = E; if (!E.photo) return;
+    if (vlmMode() === 'off') { alert('Bộ phân tích kỹ đã tắt trên máy này vì lần trước nó làm app bị đóng do thiếu bộ nhớ.  Bạn vẫn dùng được: nhận diện nhanh, đọc chữ, khoanh vùng & dạy AI, và thêm tay. Muốn thử lại: tab Cá nhân → Bộ phân tích kỹ → Thử lại.'); return; }
     if (!(await VLM.downloaded()) && !confirm('Lần đầu cần tải bộ phân tích kỹ (khoảng ' + VLM_MB + ' MB) về máy. Sau đó dùng được khi không có mạng. Tải bây giờ?')) return;
     const prev = E.deep && E.deep.status === 'done' ? E.deep : null, keep = prev ? prev.items.filter(i => i.on || i.src === 'user' || i.src === 'mem') : [];
     E.deep = { status: 'run', msg: 'Đang nạp bộ phân tích…', p: 0 }; updDeep();
     try {
       const img = await ensureImg(), c = drawScaled(img, 1024), png = await new Promise(r => c.toBlob(r, 'image/png')), jpg = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
       const seen = {};
+      if (MOBILE && ocrWorker) { try { await ocrWorker.terminate(); } catch (e) { /* bỏ qua */ } ocrWorker = null; }   // nhường bộ nhớ cho mô hình
+      lsSet('nl-vlm-busy', vlmMode());
       const a = await VLM.run([{ image: png, task: '<OD>' }, { image: jpg, task: '<OD>' }, { image: png, task: '<MORE_DETAILED_CAPTION>' }], m => {
         if (E !== mine || !E.deep || E.deep.status !== 'run') return;
         if (m.type === 'progress') { seen[m.file] = [m.loaded, m.total]; const v = Object.values(seen), l = v.reduce((x, y) => x + y[0], 0), t = v.reduce((x, y) => x + y[1], 0); E.deep.p = t ? l / t : 0; E.deep.msg = 'Đang tải mô hình ' + fmt0(l / 1048576) + ' / ' + fmt0(t / 1048576) + ' MB…'; }
         else { E.deep.p = (m.i + 0.5) / m.n; E.deep.msg = ['Đang tìm từng thành phần trên ảnh (lượt 1/3)…', 'Đang tìm lại trên bản ảnh khác để đối chiếu (lượt 2/3)…', 'Đang mô tả ảnh để đối chiếu (lượt 3/3)…'][m.i]; }
         const b = $('#e-deep .progress i'), s = $('#e-deep .msg'); if (b) b.style.width = Math.round(E.deep.p * 100) + '%'; if (s) s.textContent = E.deep.msg;
       });
+      lsSet('nl-vlm-busy', null);
       if (E !== mine) return;
       const d = buildDeep(a, { w: c.width, h: c.height });
       // giữ lại những gì người dùng đã tự thêm / app đã nhận ra từ mẫu đã dạy
@@ -456,7 +480,7 @@
         if (E !== mine) return;
       }
       E.deep = d; applyRecall(found);
-    } catch (err) { if (E !== mine) return; E.deep = prev || null; updDeep(); toast('Không chạy được bộ phân tích kỹ: ' + (err && err.message || err)); return; }
+    } catch (err) { lsSet('nl-vlm-busy', null); if (E !== mine) return; E.deep = prev || null; updDeep(); toast('Không chạy được bộ phân tích kỹ: ' + (err && err.message || err)); return; }
     updDeep();
   }
   const searchIng = q => {
@@ -838,7 +862,7 @@
         <button class="btn sm" data-act="install" id="btn-install" ${S.installEvt ? '' : 'hidden'}>Cài ứng dụng</button>`}
         <p class="small" id="offline-state" style="margin:8px 0 0"></p></div>
       <div class="card"><h2>Phân tích kỹ (AI trên máy)</h2><p class="small muted" style="margin:4px 0 8px">Mô hình Florence-2 tìm từng thành phần trên đĩa nhiều món. Nặng khoảng ${VLM_MB} MB, tải một lần rồi chạy không cần mạng. Máy có GPU hỗ trợ WebGPU thì nhanh hơn nhiều.</p>
-        <p class="small" id="vlm-state" style="margin:0 0 8px">Đang kiểm tra…</p><div class="btns"><button class="btn sm" data-act="vlm-download">Tải về máy</button><button class="btn sm danger" data-act="vlm-delete">Xóa khỏi máy</button></div></div>
+        <p class="small" id="vlm-state" style="margin:0 0 8px">Đang kiểm tra…</p><div class="btns"><button class="btn sm" data-act="vlm-download">Tải về máy</button><button class="btn sm danger" data-act="vlm-delete">Xóa khỏi máy</button></div><p class="small muted" style="margin:8px 0 0">Chế độ chạy: <b>${VLM_MODE_TXT[vlmMode()]}</b>.${vlmMode() !== VLM_LADDER[0] ? ' <button class="btn sm" data-act="vlm-retry">Thử lại</button>' : ''}</p></div>
       <div class="card"><h2>Những gì bạn đã dạy AI</h2>${(() => { const g = {}; for (const t of S.taught) { const o = g[t.label] = g[t.label] || { pos: [], neg: 0 }; if (t.neg) o.neg++; else o.pos.push(t); } const ks = Object.keys(g); return ks.length ? `<p class="small muted" style="margin:4px 0 0">Mỗi lần bạn khoanh vùng và đặt tên, hoặc xác nhận / bỏ một gợi ý, app lưu một mẫu. Càng nhiều mẫu càng nhận đúng.</p>` + ks.map(k => `<div class="item"><div class="grow"><b>${esc(k)}</b><div class="small muted">${g[k].pos.length} mẫu đúng${g[k].neg ? ` · ${g[k].neg} mẫu “không phải”` : ''}</div>${[...new Set(g[k].pos.map(t => t.note).filter(Boolean))].map(n => `<div class="small muted">“${esc(n)}”</div>`).join('')}<div class="thumbs">${g[k].pos.filter(t => t.thumb).slice(-6).map(t => `<img src="${t.thumb}" alt="">`).join('')}</div></div><button class="btn sm danger" data-act="taught-del" data-label="${esc(k)}">Xóa</button></div>`).join('') + `<div class="btns" style="margin-top:8px"><button class="btn sm danger" data-act="taught-clear">Xóa tất cả mẫu</button></div>` : `<p class="small muted" style="margin:4px 0 0">Chưa có mẫu nào. Khi nhập bữa, bấm <b>Khoanh vùng</b> trên ảnh, khoanh một thành phần rồi chọn tên — app sẽ nhớ để lần sau tự gợi ý.</p>`; })()}</div>
       <div class="card"><h2>Dữ liệu</h2><p class="small muted" style="margin:4px 0 8px">Mọi dữ liệu chỉ nằm trên máy này. Nên xuất bản sao lưu định kỳ, nhất là trước khi đổi máy hoặc xóa dữ liệu trình duyệt.</p>
         <div class="btns"><button class="btn sm" data-act="export">Xuất bản sao lưu</button><button class="btn sm" data-act="import">Nhập bản sao lưu</button><button class="btn sm danger" data-act="wipe">Xóa toàn bộ</button></div>
@@ -940,7 +964,8 @@
     async 'taught-del'(el) { if (!confirm('Xóa các mẫu đã dạy cho “' + el.dataset.label + '”?')) return; S.taught = S.taught.filter(t => t.label !== el.dataset.label); await saveKV('taught', S.taught); renderSettings(); },
     async 'taught-clear'() { if (!confirm('Xóa TẤT CẢ mẫu đã dạy AI?')) return; S.taught = []; await saveKV('taught', S.taught); renderSettings(); },
     'deep-confirm'() { deepConfirm(); },
-    async 'vlm-download'() { const el = $('#vlm-state'); try { const seen = {}; await VLM.load(m => { if (m.type !== 'progress') return; seen[m.file] = [m.loaded, m.total]; const v = Object.values(seen), l = v.reduce((x, y) => x + y[0], 0), t = v.reduce((x, y) => x + y[1], 0); if ($('#vlm-state')) $('#vlm-state').textContent = 'Đang tải ' + fmt0(l / 1048576) + ' / ' + fmt0(t / 1048576) + ' MB…'; }); toast('Đã tải xong bộ phân tích kỹ'); } catch (e) { toast('Tải không thành công: ' + (e.message || e)); } if (S.tab === 'settings') renderSettings(); void el; },
+    async 'vlm-download'() { const el = $('#vlm-state'); if (vlmMode() === 'off') return toast('Bộ phân tích kỹ đang tắt trên máy này. Bấm “Thử lại” nếu muốn bật.'); try { const seen = {}; lsSet('nl-vlm-busy', vlmMode()); await VLM.load(m => { if (m.type !== 'progress') return; seen[m.file] = [m.loaded, m.total]; const v = Object.values(seen), l = v.reduce((x, y) => x + y[0], 0), t = v.reduce((x, y) => x + y[1], 0); if ($('#vlm-state')) $('#vlm-state').textContent = 'Đang tải ' + fmt0(l / 1048576) + ' / ' + fmt0(t / 1048576) + ' MB…'; }); lsSet('nl-vlm-busy', null); toast('Đã tải xong bộ phân tích kỹ'); } catch (e) { lsSet('nl-vlm-busy', null); toast('Tải không thành công: ' + (e.message || e)); } if (S.tab === 'settings') renderSettings(); void el; },
+    'vlm-retry'() { lsSet('nl-vlm-mode', null); lsSet('nl-vlm-busy', null); vlmCrashNote = ''; VLM.reset(); renderSettings(); toast('Đã đặt lại. Bạn có thể chạy thử phân tích kỹ.'); },
     async 'vlm-delete'() { if (!confirm('Xóa bộ phân tích kỹ khỏi máy? Có thể tải lại sau.')) return; VLM.reset(); await caches.delete('transformers-cache'); renderSettings(); toast('Đã xóa'); },
     'crop-apply'() { applyCrop(); },
     'add-sim'(el) { const m = S.meals.find(x => x.id === el.dataset.id); if (!m) return; for (const it of m.items) { E.items.push(JSON.parse(JSON.stringify(it))); noteChoice(it.name); } updItems(); toast('Đã thêm ' + m.items.length + ' món'); },
@@ -1015,9 +1040,10 @@
   /* ---------- Khởi động ---------- */
   (async function init() {
     try { await loadAll(); } catch (e) { $('#view').innerHTML = `<div class="empty">Không mở được bộ nhớ trên máy (IndexedDB). Hãy tắt chế độ duyệt riêng tư rồi mở lại.</div>`; return; }
-    render();
+    vlmCrashCheck(); render();
+    if (vlmCrashNote) setTimeout(() => alert(vlmCrashNote), 400);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => { setTimeout(offlineState, 1500); let done = false; try { done = sessionStorage.getItem('coi') === '1'; } catch (e) { done = true; } const go = () => { if (!self.crossOriginIsolated && !done && !E && $('#sheet2').hidden) { try { sessionStorage.setItem('coi', '1'); } catch (e) { return; } location.reload(); } }; if (navigator.serviceWorker.controller) go(); else navigator.serviceWorker.addEventListener('controllerchange', go, { once: true }); }).catch(() => {});
   })();
-  window.__nutrilens = { VLM, S, L, FD, openEditor, runOcr, analyze, getE: () => E, render, loadAll };
+  window.__nutrilens = { vlmMode, VLM, S, L, FD, openEditor, runOcr, analyze, getE: () => E, render, loadAll };
 })();
